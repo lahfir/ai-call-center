@@ -211,14 +211,13 @@ fastify.register(async (fastifyInstance) => {
             break;
 
           case "media":
-            if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-              const audioMessage = {
-                user_audio_chunk: Buffer.from(
-                  msg.media.payload,
-                  "base64"
-                ).toString("base64"),
-              };
-              elevenLabsWs.send(JSON.stringify(audioMessage));
+            if (!msg.media.track || msg.media.track === "inbound") {
+              if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                const audioMessage = {
+                  user_audio_chunk: msg.media.payload,
+                };
+                elevenLabsWs.send(JSON.stringify(audioMessage));
+              }
             }
             break;
 
