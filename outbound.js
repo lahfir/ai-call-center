@@ -379,34 +379,63 @@ fastify.register(async (fastifyInstance) => {
 
 const activeTwilioWs = new Map();
 
-if (!fastify.__endCallSocketSetup) {
-  fastify.__endCallSocketSetup = true;
-  fastify.io.on("connection", (client) => {
+// Defer Socket.IO event wiring until Fastify is ready (io instance attached)
+fastify.ready(() => {
+  if (fastify.__outboundSocketSetup) return;
+  fastify.__outboundSocketSetup = true;
+
+  const io = fastify.io;
+  if (!io) {
+    console.error("[Server] fastify.io not initialized");
+    return;
+  }
+
+  io.on("connection", (client) => {
     client.on("end_call", ({ callSid }) => {
-      if (!callSid) return;
-      const twilioWs = activeTwilioWs.get(callSid);
-      if (twilioWs && twilioWs.readyState === WebSocket.OPEN) {
-        console.log(`[Server] Received end_call for ${callSid}. Closing WS.`);
-        twilioWs.close();
-        activeTwilioWs.delete(callSid);
-        client.emit("call_ended", { callSid });
+      const wsToClose = callSid
+        ? activeTwilioWs.get(callSid)
+        : [...activeTwilioWs.values()][0];
+      if (!wsToClose) {
+        client.emit("error", { message: "No active call to end" });
+        return;
       }
+      const csid = callSid || [...activeTwilioWs.keys()][0];
+      wsToClose.close();
+      activeTwilioWs.delete(csid);
+      client.emit("call_ended", { callSid: csid });
+    });
+
+    client.on("say_text", async ({ callSid, text }) => {
+      const twilioWs = callSid
+        ? activeTwilioWs.get(callSid)
+        : [...activeTwilioWs.values()][0];
+      if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
+        client.emit("error", { message: "Call not active" });
+        return;
+      }
+      if (!text) {
+        client.emit("error", { message: "Missing text" });
+        return;
+      }
+      console.log(`[Server] say_text (outbound) → ${text}`);
+      await streamTtsToTwilio(twilioWs, text);
     });
   });
 
+  // REST fallback to hang up
   fastify.post("/end_call", async (request, reply) => {
     const { callSid } = request.body || {};
-    const twilioWs = activeTwilioWs.get(callSid);
-    if (twilioWs && twilioWs.readyState === WebSocket.OPEN) {
-      twilioWs.close();
+    const wsToClose = callSid
+      ? activeTwilioWs.get(callSid)
+      : [...activeTwilioWs.values()][0];
+    if (wsToClose && wsToClose.readyState === WebSocket.OPEN) {
+      wsToClose.close();
       activeTwilioWs.delete(callSid);
       return { success: true };
     }
-    reply
-      .code(404)
-      .send({ success: false, message: "Call not found or already closed" });
+    reply.code(404).send({ success: false, message: "Call not found" });
   });
-}
+});
 
 const ELEVENLABS_VOICE_ID =
   process.env.ELEVENLABS_VOICE_ID || "21m00Tcm4TlvDq8ikWAM";
@@ -442,27 +471,6 @@ async function streamTtsToTwilio(ws, text) {
   } catch (e) {
     console.error("[Server] TTS error", e);
   }
-}
-
-if (!fastify.__sayTextSetup) {
-  fastify.__sayTextSetup = true;
-  fastify.io.on("connection", (client) => {
-    client.on("say_text", async ({ callSid, text }) => {
-      const twilioWs = callSid
-        ? activeTwilioWs.get(callSid)
-        : [...activeTwilioWs.values()][0];
-      if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
-        client.emit("error", { message: "Call not active" });
-        return;
-      }
-      if (!text) {
-        client.emit("error", { message: "Missing text" });
-        return;
-      }
-      console.log(`[Server] say_text (outbound) → ${text}`);
-      await streamTtsToTwilio(twilioWs, text);
-    });
-  });
 }
 
 // Start the Fastify server
