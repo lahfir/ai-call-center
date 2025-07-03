@@ -421,20 +421,6 @@ fastify.ready(() => {
       await streamTtsToTwilio(twilioWs, text);
     });
   });
-
-  // REST fallback to hang up
-  fastify.post("/end_call", async (request, reply) => {
-    const { callSid } = request.body || {};
-    const wsToClose = callSid
-      ? activeTwilioWs.get(callSid)
-      : [...activeTwilioWs.values()][0];
-    if (wsToClose && wsToClose.readyState === WebSocket.OPEN) {
-      wsToClose.close();
-      activeTwilioWs.delete(callSid);
-      return { success: true };
-    }
-    reply.code(404).send({ success: false, message: "Call not found" });
-  });
 });
 
 const ELEVENLABS_VOICE_ID =
@@ -472,6 +458,65 @@ async function streamTtsToTwilio(ws, text) {
     console.error("[Server] TTS error", e);
   }
 }
+
+// Endpoint to trigger ElevenLabs batch calling
+fastify.post("/batch-calling", async (request, reply) => {
+  try {
+    const { recipients } = request.body || {};
+    if (!Array.isArray(recipients) || recipients.length === 0) {
+      return reply
+        .code(400)
+        .send({ success: false, message: "Missing recipients array" });
+    }
+
+    const batchPayload = {
+      call_name: `batch_${Date.now()}`,
+      agent_id: ELEVENLABS_AGENT_ID,
+      agent_phone_number_id: process.env.ELEVENLABS_PHONE_NUMBER_ID || "",
+      scheduled_time_unix: Math.floor(Date.now() / 1000),
+      recipients: recipients.map((p) =>
+        typeof p === "string" ? { phone_number: p } : p
+      ),
+    };
+
+    const elResp = await fetch(
+      "https://api.elevenlabs.io/v1/convai/batch-calling/submit",
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify(batchPayload),
+      }
+    );
+
+    const data = await elResp.json();
+    if (!elResp.ok) {
+      console.error("[ElevenLabs] Batch call error", data);
+      return reply.code(elResp.status).send({ success: false, error: data });
+    }
+
+    reply.send({ success: true, data });
+  } catch (err) {
+    console.error("[Server] Batch calling error", err);
+    reply.code(500).send({ success: false, message: "Internal server error" });
+  }
+});
+
+// REST fallback (must be declared before listen)
+fastify.post("/end_call", async (request, reply) => {
+  const { callSid } = request.body || {};
+  const wsToClose = callSid
+    ? activeTwilioWs.get(callSid)
+    : [...activeTwilioWs.values()][0];
+  if (wsToClose && wsToClose.readyState === WebSocket.OPEN) {
+    wsToClose.close();
+    activeTwilioWs.delete(callSid);
+    return { success: true };
+  }
+  reply.code(404).send({ success: false, message: "Call not found" });
+});
 
 // Start the Fastify server
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
