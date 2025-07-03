@@ -3,6 +3,7 @@ import WebSocket from "ws";
 import dotenv from "dotenv";
 import fastifyFormBody from "@fastify/formbody";
 import fastifyWs from "@fastify/websocket";
+import fastifyIO from "fastify-socket.io";
 import Twilio from "twilio";
 
 // Load environment variables from .env file
@@ -32,6 +33,7 @@ if (
 const fastify = Fastify();
 fastify.register(fastifyFormBody);
 fastify.register(fastifyWs);
+fastify.register(fastifyIO, { cors: { origin: "*" } });
 
 const PORT = process.env.PORT || 8000;
 
@@ -231,15 +233,23 @@ fastify.register(async (fastifyInstance) => {
                   break;
 
                 case "agent_response":
-                  console.log(
-                    `[Twilio] Agent response: ${message.agent_response_event?.agent_response}`
-                  );
+                  const agentAnswer =
+                    message.agent_response_event?.agent_response;
+                  console.log(`[Twilio] Agent response: ${agentAnswer}`);
+                  fastify.io.emit("agent_response", {
+                    callSid,
+                    text: agentAnswer,
+                  });
                   break;
 
                 case "user_transcript":
-                  console.log(
-                    `[Twilio] User transcript: ${message.user_transcription_event?.user_transcript}`
-                  );
+                  const userSpeech =
+                    message.user_transcription_event?.user_transcript;
+                  console.log(`[Twilio] User transcript: ${userSpeech}`);
+                  fastify.io.emit("user_transcript", {
+                    callSid,
+                    text: userSpeech,
+                  });
                   break;
 
                 default:
@@ -308,6 +318,11 @@ fastify.register(async (fastifyInstance) => {
             default:
               console.log(`[Twilio] Unhandled event: ${msg.event}`);
           }
+
+          // Broadcast every raw ElevenLabs message if you wish
+          fastify.io.emit("elevenlabs_raw", msg);
+          fastify.io.emit("twilio_event", { event: msg.event, data: msg });
+          fastify.io.emit(`twilio_${msg.event}`, msg);
         } catch (error) {
           console.error("[Twilio] Error processing message:", error);
         }
