@@ -448,9 +448,15 @@ if (!fastify.__sayTextSetup) {
   fastify.__sayTextSetup = true;
   fastify.io.on("connection", (client) => {
     client.on("say_text", async ({ callSid, text }) => {
-      const twilioWs = activeTwilioWs.get(callSid);
+      const twilioWs = callSid
+        ? activeTwilioWs.get(callSid)
+        : [...activeTwilioWs.values()][0];
       if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
         client.emit("error", { message: "Call not active" });
+        return;
+      }
+      if (!text) {
+        client.emit("error", { message: "Missing text" });
         return;
       }
       console.log(`[Server] say_text (outbound) → ${text}`);

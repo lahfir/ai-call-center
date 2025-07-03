@@ -34,20 +34,33 @@ const activeTwilioWs = new Map();
 
 fastify.io.on("connection", (client) => {
   client.on("end_call", ({ callSid }) => {
-    if (!callSid) return;
-    const twilioWs = activeTwilioWs.get(callSid);
+    const wsToClose = callSid
+      ? activeTwilioWs.get(callSid)
+      : [...activeTwilioWs.values()][0];
+    if (!wsToClose) {
+      client.emit("error", { message: "No active call to end" });
+      return;
+    }
+    const csid = callSid || [...activeTwilioWs.keys()][0];
+    const twilioWs = wsToClose;
     if (twilioWs && twilioWs.readyState === WebSocket.OPEN) {
-      console.log(`[Server] Received end_call for ${callSid}. Closing WS.`);
+      console.log(`[Server] Received end_call for ${csid}. Closing WS.`);
       twilioWs.close();
-      activeTwilioWs.delete(callSid);
-      client.emit("call_ended", { callSid });
+      activeTwilioWs.delete(csid);
+      client.emit("call_ended", { callSid: csid });
     }
   });
 
   client.on("say_text", async ({ callSid, text }) => {
-    const twilioWs = activeTwilioWs.get(callSid);
+    const twilioWs = callSid
+      ? activeTwilioWs.get(callSid)
+      : [...activeTwilioWs.values()][0];
     if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
       client.emit("error", { message: "Call not active" });
+      return;
+    }
+    if (!text) {
+      client.emit("error", { message: "Missing text" });
       return;
     }
     console.log(`[Server] say_text → ${text}`);
