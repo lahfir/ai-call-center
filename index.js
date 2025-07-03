@@ -33,6 +33,14 @@ const PORT = process.env.PORT || 8000;
 const activeTwilioWs = new Map();
 
 fastify.io.on("connection", (client) => {
+  console.log("[Socket.IO] Client connected", client.id);
+
+  client.onAny((event, payload) => {
+    if (event !== "heartbeat") {
+      console.log(`[Socket.IO] Event received: ${event}`, payload);
+    }
+  });
+
   client.on("end_call", ({ callSid }) => {
     const wsToClose = callSid
       ? activeTwilioWs.get(callSid)
@@ -65,6 +73,10 @@ fastify.io.on("connection", (client) => {
     }
     console.log(`[Server] say_text → ${text}`);
     await streamTtsToTwilio(twilioWs, text);
+  });
+
+  client.on("disconnect", (reason) => {
+    console.log(`[Socket.IO] Client ${client.id} disconnected (${reason})`);
   });
 });
 
@@ -280,9 +292,6 @@ fastify.register(async (fastifyInstance) => {
           case "media":
             const track = msg.media.track || "unknown";
             const size = msg.media.payload.length;
-            console.log(
-              `[Twilio] Media event on track: ${track} (payload ${size} bytes)`
-            );
             if (!track || track === "inbound") {
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 const audioMessage = {
