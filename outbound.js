@@ -127,7 +127,7 @@ fastify.all("/outbound-call-twiml", async (request, reply) => {
   const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
       <Response>
         <Connect>
-          <Stream url="wss://${request.headers.host}/outbound-media-stream">
+          <Stream url="wss://${request.headers.host}/outbound-media-stream" track="both_tracks">
             <Parameter name="prompt" value="${prompt}" />
             <Parameter name="first_message" value="${first_message}" />
           </Stream>
@@ -313,14 +313,13 @@ fastify.register(async (fastifyInstance) => {
               break;
 
             case "media":
-              if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-                const audioMessage = {
-                  user_audio_chunk: Buffer.from(
-                    msg.media.payload,
-                    "base64"
-                  ).toString("base64"),
-                };
-                elevenLabsWs.send(JSON.stringify(audioMessage));
+              if (msg.media.track === "inbound") {
+                if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                  const audioMessage = {
+                    user_audio_chunk: msg.media.payload,
+                  };
+                  elevenLabsWs.send(JSON.stringify(audioMessage));
+                }
               }
               break;
 

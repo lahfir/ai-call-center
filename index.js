@@ -37,7 +37,7 @@ fastify.all("/twilio/inbound_call", async (request, reply) => {
   const twimlResponse = `<?xml version="1.0" encoding="UTF-8"?>
     <Response>
       <Connect>
-        <Stream url="wss://${request.headers.host}/media-stream" />
+        <Stream url="wss://${request.headers.host}/media-stream" track="both_tracks" />
       </Connect>
     </Response>`;
 
@@ -209,14 +209,13 @@ fastify.register(async (fastifyInstance) => {
             break;
 
           case "media":
-            if (elevenLabsWs?.readyState === WebSocket.OPEN) {
-              const audioMessage = {
-                user_audio_chunk: Buffer.from(
-                  msg.media.payload,
-                  "base64"
-                ).toString("base64"),
-              };
-              elevenLabsWs.send(JSON.stringify(audioMessage));
+            if (msg.media.track === "inbound") {
+              if (elevenLabsWs?.readyState === WebSocket.OPEN) {
+                const audioMessage = {
+                  user_audio_chunk: msg.media.payload,
+                };
+                elevenLabsWs.send(JSON.stringify(audioMessage));
+              }
             }
             break;
 
