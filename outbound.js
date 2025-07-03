@@ -96,10 +96,26 @@ fastify.post("/outbound-call", async (request, reply) => {
     });
   } catch (error) {
     console.error("Error initiating outbound call:", error);
-    reply.code(500).send({
+
+    const status = error.status || 500;
+    const body = {
       success: false,
-      error: "Failed to initiate call",
-    });
+      message: error.message || "Failed to initiate call",
+      code: error.code,
+      moreInfo: error.moreInfo,
+    };
+
+    if (error.code === 21219) {
+      body.hint =
+        "Your Twilio account is in trial mode. Verify the destination number or upgrade the account.";
+    }
+
+    reply.code(status).send(body);
+
+    // Push to dashboard in real-time
+    try {
+      fastify.io.emit("outbound_error", body);
+    } catch (_) {}
   }
 });
 
