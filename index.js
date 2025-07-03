@@ -10,6 +10,8 @@ import fastifyCors from "@fastify/cors";
 dotenv.config();
 
 const { ELEVENLABS_AGENT_ID, ELEVENLABS_API_KEY } = process.env;
+const ELEVENLABS_VOICE_ID =
+  process.env.ELEVENLABS_VOICE_ID || "EXAVITQu4vr4xnSDxMaL"; // default voice ID
 
 // Check for the required ElevenLabs Agent ID
 if (!ELEVENLABS_AGENT_ID || !ELEVENLABS_API_KEY) {
@@ -27,6 +29,44 @@ fastify.register(fastifyIO, { cors: { origin: "*" } });
 fastify.register(fastifyCors, { origin: true });
 
 const PORT = process.env.PORT || 8000;
+
+const activeTwilioWs = new Map();
+
+fastify.io.on("connection", (client) => {
+  client.on("end_call", ({ callSid }) => {
+    if (!callSid) return;
+    const twilioWs = activeTwilioWs.get(callSid);
+    if (twilioWs && twilioWs.readyState === WebSocket.OPEN) {
+      console.log(`[Server] Received end_call for ${callSid}. Closing WS.`);
+      twilioWs.close();
+      activeTwilioWs.delete(callSid);
+      client.emit("call_ended", { callSid });
+    }
+  });
+
+  client.on("say_text", async ({ callSid, text }) => {
+    const twilioWs = activeTwilioWs.get(callSid);
+    if (!twilioWs || twilioWs.readyState !== WebSocket.OPEN) {
+      client.emit("error", { message: "Call not active" });
+      return;
+    }
+    console.log(`[Server] say_text → ${text}`);
+    await streamTtsToTwilio(twilioWs, text);
+  });
+});
+
+fastify.post("/end_call", async (request, reply) => {
+  const { callSid } = request.body || {};
+  const twilioWs = activeTwilioWs.get(callSid);
+  if (twilioWs && twilioWs.readyState === WebSocket.OPEN) {
+    twilioWs.close();
+    activeTwilioWs.delete(callSid);
+    return { success: true };
+  }
+  reply
+    .code(404)
+    .send({ success: false, message: "Call not found or already closed" });
+});
 
 // Root route for health check
 fastify.get("/", async (_, reply) => {
@@ -106,6 +146,13 @@ fastify.register(async (fastifyInstance) => {
 
               case "audio":
                 if (streamSid) {
+                  const chunkSize =
+                    message.audio?.chunk?.length ||
+                    message.audio_event?.audio_base_64?.length ||
+                    0;
+                  console.log(
+                    `[ElevenLabs] Forwarding audio chunk to Twilio (${chunkSize} bytes)`
+                  );
                   if (message.audio?.chunk) {
                     const audioData = {
                       event: "media",
@@ -205,24 +252,41 @@ fastify.register(async (fastifyInstance) => {
           case "start":
             streamSid = msg.start.streamSid;
             callSid = msg.start.callSid;
+            ws.__streamSid = streamSid; // store for TTS helper
+            activeTwilioWs.set(callSid, ws);
             console.log(
               `[Twilio] Stream started - StreamSid: ${streamSid}, CallSid: ${callSid}`
+            );
+            console.log(
+              `[Twilio] Start message customParameters: ${JSON.stringify(
+                msg.start.customParameters || {}
+              )}`
             );
             break;
 
           case "media":
-            if (!msg.media.track || msg.media.track === "inbound") {
+            const track = msg.media.track || "unknown";
+            const size = msg.media.payload.length;
+            console.log(
+              `[Twilio] Media event on track: ${track} (payload ${size} bytes)`
+            );
+            if (!track || track === "inbound") {
               if (elevenLabsWs?.readyState === WebSocket.OPEN) {
                 const audioMessage = {
                   user_audio_chunk: msg.media.payload,
                 };
                 elevenLabsWs.send(JSON.stringify(audioMessage));
               }
+            } else {
+              console.log(
+                `[Twilio] Skipping non-inbound media track: ${track}`
+              );
             }
             break;
 
           case "stop":
             console.log(`[Twilio] Stream ${streamSid} ended`);
+            activeTwilioWs.delete(callSid);
             if (elevenLabsWs?.readyState === WebSocket.OPEN) {
               elevenLabsWs.close();
             }
@@ -242,12 +306,51 @@ fastify.register(async (fastifyInstance) => {
     // Handle WebSocket closure
     ws.on("close", () => {
       console.log("[Twilio] Client disconnected");
+      activeTwilioWs.delete(callSid);
       if (elevenLabsWs?.readyState === WebSocket.OPEN) {
         elevenLabsWs.close();
       }
     });
   });
 });
+
+async function streamTtsToTwilio(ws, text) {
+  try {
+    const ttsResp = await fetch(
+      `https://api.elevenlabs.io/v1/text-to-speech/${ELEVENLABS_VOICE_ID}`,
+      {
+        method: "POST",
+        headers: {
+          "xi-api-key": ELEVENLABS_API_KEY,
+          "Content-Type": "application/json",
+        },
+        body: JSON.stringify({
+          text,
+          output_format: "ulaw_8000",
+        }),
+      }
+    );
+    if (!ttsResp.ok) {
+      console.error("[ElevenLabs] TTS request failed", await ttsResp.text());
+      return;
+    }
+    const arrayBuffer = await ttsResp.arrayBuffer();
+    const base64Audio = Buffer.from(arrayBuffer).toString("base64");
+
+    const CHUNK_SIZE = 1000;
+    for (let i = 0; i < base64Audio.length; i += CHUNK_SIZE) {
+      const chunk = base64Audio.slice(i, i + CHUNK_SIZE);
+      const mediaMsg = {
+        event: "media",
+        streamSid: ws.__streamSid,
+        media: { payload: chunk },
+      };
+      ws.send(JSON.stringify(mediaMsg));
+    }
+  } catch (err) {
+    console.error("[Server] Error generating or sending TTS:", err);
+  }
+}
 
 // Start the Fastify server
 fastify.listen({ port: PORT, host: "0.0.0.0" }, (err) => {
